@@ -3,7 +3,7 @@ import pandas as pd
 from fpdf import FPDF
 
 # 设置文件夹路径
-root_dir = "output"
+root_dir = "output_new_json"
 pdf_filename = os.path.join(root_dir, "merged_output.pdf")
 
 # 初始化 PDF 对象
