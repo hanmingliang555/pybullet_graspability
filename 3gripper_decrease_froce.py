@@ -16,8 +16,7 @@ import os
 
 
 def run():
-    log = pd.DataFrame(columns=['抓取结果', '掉落质量(kg)','空间角变化(弧度)','机械臂移动距离','末端执行器位置','机械臂位置','物体位置', '物体质心位置','接触点位置','法线','距离','正向接触力','侧向摩擦力','相对于物体质心的距离','在物体坐标系中的坐标'])
-    log_1=pd.DataFrame(columns=['抓取场景和物体','力(N)', '质量(kg)','空间角变化(弧度)','物体质心移动距离', '物体质心位置','接触点位置','正向接触力','侧向摩擦力','相对于物体质心的距离','在物体坐标系中的坐标'])
+    log = pd.DataFrame(columns=['抓取结果', '掉落质量(kg)','空间角变化(弧度)','物体质心移动距离','末端执行器位置','机械臂位置','物体位置', '物体质心位置','接触点位置','法线','距离','正向接触力','侧向摩擦力','相对于物体质心的距离','在物体坐标系中的坐标'])
     object,constraint=create_object()
     #计算从物体坐标系到世界坐标系的变化矩阵，4*4的，包括旋转和平移
     object_T_global=get_object_matrix(object,center_of_mass)
@@ -25,25 +24,24 @@ def run():
     p.removeBody(object)
     flags=1
     #依次读取json文件内容进行仿真
-    for i in range(1):
+    for i in range(100):
+        log_1=pd.DataFrame(columns=['抓取场景和物体','力(N)', '质量(kg)','空间角变化(弧度)','物体质心移动距离', '物体质心位置','接触点位置','正向接触力','侧向摩擦力','相对于物体质心的距离','在物体坐标系中的坐标'])
         #读取json文件，获得从夹爪坐标系到物体坐标系的变换矩阵，4x4,包括旋转和平移,flag_1代表着文件内是否还有有效数据
-        grasp_center,grasp_endpoints,gravity,flag_1,obj_id,scene_id=read_json(obj_key,i)
-        gravity_setting(gravity)
+        grasp_center,grasp_endpoints,gripper_ori,gravity,flag_1,obj_id,scene_id=read_json(i)
+        gravity_setting(np.array(gravity))
         # 初始化一行数据为 None
         log.loc[len(log)] = [None] * len(log.columns)
         #初始化设置log
         log=initialization_log(log)
         if flag_1==True:
-            for j in range(num_points):
-                if flags==1 or flags==-1:
-                    gripper_basePosition=gripper_pos_list[j]
-                    #gripper_basePosition=args.position
-                panda=create_gripper(gripper_basePosition)
+                # 调用函数生成新的 URDF
+                urdf_output_path=generate_urdf(template_urdf, output_urdf,grasp_endpoints,gripper_ori,i)
+                panda=create_gripper(urdf_output_path)
                 #执行仿真,falgs=-1说明机械臂位置不对，flags=False说明该姿势抓不住，flags=True说明可以抓住物体
                 flags,panda,object,log,object_pos_1,matrix_1=step(panda,object_T_global,grasp_center,grasp_endpoints,log,i,center_of_mass)
-                #逐渐增加物体质量，返回最后掉落时的质量
-                mass=increase_mass(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id,obj_key,center_of_mass)
-                print(mass)
+                #逐渐减小机械臂的力，记录最小的夹取力
+                min_froce=decrease_froce(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id,i,center_of_mass)
+                print(min_froce)
                 #移除所有物体、机械臂、辅助线
                 if object==-1:
                     p.removeBody(panda)
@@ -53,37 +51,29 @@ def run():
                     p.removeBody(object)
                     p.removeAllUserDebugItems()
                 #记录抓取成功时的信息
-                if flags==True or (flags == False and mass == -1):
-                    #print(gripper_basePosition)
+                if flags==True or flags == False :
+                    print(gripper_basePosition)
                     if flags==True:
                         log.iloc[-1, 0] = '抓取成功'
                     log.iloc[-1, 1] = mass
                     log.at[log.index[-1], "机械臂位置"] = gripper_basePosition
                     log.at[log.index[-1],'物体位置'] = object_position
-                    log.to_csv(f'{output_path}_{obj_key}.csv', index=True,na_rep='NA')
-                    break
-                log.to_csv(f'{output_path}_{obj_key}.csv', index=True,na_rep='NA')
+                    log.to_csv(f'{output_path}.csv', index=True,na_rep='NA')
+                log.to_csv(f'{output_path}.csv', index=True,na_rep='NA')
             #这里的flags已经从寻找位置的for循环跳出，如果falgs=-1,说明没找到合适位置
-            if flags==-1:
-                log.iloc[-1, 0] = '未找到抓取位置'
-                flags=1
+                if flags==-1:
+                    log.iloc[-1, 0] = '未找到抓取位置'
+                    flags=1
+
         else :
             print("数据读取完毕，仿真结束")
             break
 
-# 加载机械臂，将它的位置固定在gripper_basePosition
-def create_gripper(gripper_basePosition):
-    panda = p.loadURDF("simple_gripper.urdf",
-                    basePosition=gripper_basePosition, useFixedBase=True)
+# 加载机械臂
+def create_gripper(urdf_output_path):
+    panda = p.loadURDF(urdf_output_path,
+                    basePosition=object_position)
     p.changeDynamics(panda, linkIndex=-1, lateralFriction=friction_gripper)
-    p.createConstraint(parentBodyUniqueId=panda,
-                    parentLinkIndex=-1,
-                    childBodyUniqueId=-1,
-                    childLinkIndex=-1,
-                    jointType=p.JOINT_FIXED,
-                    jointAxis=[0, 0, 0],
-                    parentFramePosition=gripper_basePosition,
-                    childFramePosition=[0, 0, 0])
     return panda
 
 #创建一个物体，固定它的位置在start_position
@@ -97,7 +87,7 @@ def create_object():
     collision_shape = p.createCollisionShape(shapeType=p.GEOM_MESH,
                                              fileName=mesh_path,
                                              meshScale=mesh_scale)
-    #z_axis_neg_up_orientation = p.getQuaternionFromEuler([math.pi, 0, 0])  # 绕 x 轴旋转 180°
+
     # 创建物体并设置初始位置和姿态
     object = p.createMultiBody(baseMass=mass,  # 设置质量
                                baseCollisionShapeIndex=collision_shape,
@@ -137,42 +127,163 @@ def create_sphere(target_position,radius,rgb):
     )
     return sphere
 
+def generate_urdf(template_path, output_path,grasp_endpoints,gripper_ori,j):
+    """
+    根据模板生成新的 URDF 文件，并设置左右手指的初始点和运动方向。
+
+    :param template_path: 模板 URDF 文件路径
+    :param output_path: 生成的 URDF 文件保存路径
+    :param left_origin: 左手指初始点 [x, y, z]
+    :param left_axis: 左手指运动方向 [x, y, z]
+    :param right_origin: 右手指初始点 [x, y, z]
+    :param right_axis: 右手指运动方向 [x, y, z]
+    """
+    # 初始方向和目标方向
+    initial_direction = np.array([0, 0, 1])
+    left_finger=grasp_endpoints[0]
+    right_finger=grasp_endpoints[1]
+    middle_finger=grasp_endpoints[2]
+    left_ori=gripper_ori[0]
+    right_ori=gripper_ori[1]
+    middle_ori=gripper_ori[2]
+
+    left_rpy = calculate_rpy(initial_direction,left_ori)
+    right_rpy=calculate_rpy(initial_direction,right_ori)
+    middle_rpy=calculate_rpy(initial_direction,middle_ori)
+
+    left_axis=world_to_parent_axis(left_ori,left_rpy)
+    right_axis=world_to_parent_axis(right_ori,right_rpy)
+    middle_axis=world_to_parent_axis(middle_ori,middle_rpy)
+
+    with open(template_path, "r") as template_file:
+        urdf_content = template_file.read()
+
+    # 替换左手指的初始点和运动方向
+    urdf_content = urdf_content.replace(
+        '<origin xyz="0 -0.1 0" rpy="0 0 0"/>',
+        f'<origin xyz="{left_finger[0]} {left_finger[1]} {left_finger[2]}" rpy="{left_rpy[0]} {left_rpy[1]} {left_rpy[2]}"/>'
+    ).replace(
+        '<axis xyz="1 0 0"/>',
+        f'<axis xyz="{left_axis[0]} {left_axis[1]} {left_axis[2]}"/>'
+    )
+
+    # 替换右手指的初始点和运动方向
+    urdf_content = urdf_content.replace(
+        '<origin xyz="0 0.1 0" rpy="0 0 0"/>',
+        f'<origin xyz="{right_finger[0]} {right_finger[1]} {right_finger[2]}" rpy="{right_rpy[0]} {right_rpy[1]} {right_rpy[2]}"/>'
+    ).replace(
+        '<axis xyz="0 -1 0"/>',
+        f'<axis xyz="{right_axis[0]} {right_axis[1]} {right_axis[2]}"/>'
+    )
+
+    urdf_content = urdf_content.replace(
+        '<origin xyz="0 0 0.1" rpy="0 0 0"/>',
+        f'<origin xyz="{middle_finger[0]} {middle_finger[1]} {middle_finger[2]}" rpy="{middle_rpy[0]} {middle_rpy[1]} {middle_rpy[2]}"/>'
+    ).replace(
+        '<axis xyz="0 0 1"/>',
+        f'<axis xyz="{middle_axis[0]} {middle_axis[1]} {middle_axis[2]}"/>'
+    )
+    
+    output_path=os.path.join(output_path,scene_folder.split('.')[0])
+    os.makedirs(output_path,exist_ok=True)
+    output_path=os.path.join(output_path,f"{j}.urdf")
+    # 将修改后的 URDF 写入新的文件
+    with open(output_path, "w") as output_file:
+        output_file.write(urdf_content)
+    print(f"新的 URDF 文件已生成: {output_path}")
+    return output_path
+
+def calculate_rpy(A, B):
+    # 归一化向量
+    A = A / np.linalg.norm(A)
+    B = B / np.linalg.norm(B)
+
+    # 计算旋转轴和角度
+    axis = np.cross(A, B)
+    angle = np.arccos(np.clip(np.dot(A, B), -1.0, 1.0))
+
+    # 如果 A 和 B 平行（包括反向），特殊处理
+    if np.linalg.norm(axis) < 1e-6:
+        if np.allclose(A, B):
+            return [0, 0, 0]  # 无需旋转
+        else:
+            return [np.pi, 0, 0]  # 方向相反，旋转 180 度
+
+    axis = axis / np.linalg.norm(axis)  # 归一化旋转轴
+
+    # 使用 Rodrigues' 公式生成旋转矩阵
+    rotation_vector = axis * angle
+    rotation = R.from_rotvec(rotation_vector)
+
+    # 转换为欧拉角（rpy）
+    rpy = rotation.as_euler('xyz', degrees=False)
+    return rpy
+
+def world_to_parent_axis(world_axis, rpy):
+    # 将 rpy 转换为旋转矩阵 (parent -> world)
+    rotation = R.from_euler('xyz', rpy, degrees=False)
+    R_parent_to_world = rotation.as_matrix()
+
+    # 计算 R_world_to_parent (转置)
+    R_world_to_parent = R_parent_to_world.T
+
+    # 转换方向
+    world_axis = np.array(world_axis) / np.linalg.norm(world_axis)  # 确保单位化
+    parent_axis = np.dot(R_world_to_parent, world_axis)
+    return parent_axis
+
 #使用相机进行每个姿势的截图
 def carmer_photo(i,grasp_center,left_finger_target,right_finger_target,target_position):
 
     up_vector = [0, 0, 1]  # 相机的"上"向量
-    normal=calculate_normal_from_points(grasp_center,left_finger_target,right_finger_target)
-    camera_position_1 = target_position+0.3*normal
-    camera_position_2 = target_position-0.3*normal
+
+    camera_position_1 = object_position+[0.3,0,0]
+    camera_position_2 = object_position+[0,0.3,0]
+    camera_position_3 = object_position+[0,0,0.3]
+    camera_position_4 = object_position+[0,0,0.3]
     # 设置相机参数
-    view_matrix_1 = p.computeViewMatrix(camera_position_1, target_position, up_vector)
-    view_matrix_2 = p.computeViewMatrix(camera_position_2, target_position, up_vector)
+    view_matrix_1 = p.computeViewMatrix(camera_position_1, object_position, up_vector)
+    view_matrix_2 = p.computeViewMatrix(camera_position_2, object_position, up_vector)
+    view_matrix_3 = p.computeViewMatrix(camera_position_3, object_position, up_vector)
+    view_matrix_4 = p.computeViewMatrix(camera_position_4, object_position, up_vector)    
     projection_matrix = p.computeProjectionMatrixFOV(fov=45, aspect=1.0, nearVal=0.1, farVal=100.0)
 
     width = 640
     height = 480
     img_arr_1 = p.getCameraImage(width, height, viewMatrix=view_matrix_1, projectionMatrix=projection_matrix)
     img_arr_2 = p.getCameraImage(width, height, viewMatrix=view_matrix_2, projectionMatrix=projection_matrix)
+    img_arr_3 = p.getCameraImage(width, height, viewMatrix=view_matrix_3, projectionMatrix=projection_matrix)
+    img_arr_4 = p.getCameraImage(width, height, viewMatrix=view_matrix_4, projectionMatrix=projection_matrix)
         
     # 获取图像数据
     rgb_img_1 = np.array(img_arr_1[2])
     rgb_img_2 = np.array(img_arr_2[2])
+    rgb_img_3 = np.array(img_arr_3[2])  
+    rgb_img_4 = np.array(img_arr_4[2])  
     # 保存图像
     image_pil_1 = Image.fromarray(rgb_img_1)
     image_pil_2 = Image.fromarray(rgb_img_2)
+    image_pil_3 = Image.fromarray(rgb_img_3)
+    image_pil_4 = Image.fromarray(rgb_img_4)
     # 创建绘图对象
     draw_1 = ImageDraw.Draw(image_pil_1)
     draw_2 = ImageDraw.Draw(image_pil_2)
-
+    draw_3 = ImageDraw.Draw(image_pil_3)
+    draw_4 = ImageDraw.Draw(image_pil_4)
     # 添加文字到左上角
-    text_1 = f'{output_path}_{obj_key}_1.png'
-    text_2 = f'{output_path}_{obj_key}_2.png' 
+    text_1 = f'{output_path}_{i}_1.png'
+    text_2 = f'{output_path}_{i}_2.png' 
+    text_3 = f'{output_path}_{i}_3.png'
+    text_4 = f'{output_path}_{i}_4.png' 
     text_position = (10, 10)  # 文字位置，左上角 (x, y)
     draw_1.text(text_position, text_1, fill="black")  # 在第一张图片上添加文字
     draw_2.text(text_position, text_2, fill="black")  # 在第二张图片上添加文字
-
-    image_pil_1.save(f'{output_path}_{obj_key}_1.png')
-    image_pil_2.save(f'{output_path}_{obj_key}_2.png')
+    draw_3.text(text_position, text_3, fill="black") 
+    draw_4.text(text_position, text_4, fill="black")  
+    image_pil_1.save(f'{output_path}_{i}_1.png')
+    image_pil_2.save(f'{output_path}_{i}_2.png')
+    image_pil_3.save(f'{output_path}_{i}_3.png')
+    image_pil_4.save(f'{output_path}_{i}_4.png')
 
 #将夹爪坐标系里的点映射到世界坐标系里
 def gripperpoint_T_global(gripper_point,gripper_T_object,object_T_global):
@@ -196,67 +307,6 @@ def objectpoint_T_global(object_point,object_T_global):
     object_point_new = object_point_new[:3]
     return object_point_new
 
-#将一个向量转化为四元数
-def gripper_ori_T_rotation_quaternion(target_ori):
-
-    # 归一化
-    target_ori = target_ori / np.linalg.norm(target_ori)  
-    # 默认抓取方向 (即Z轴方向) [0, 0, 1]
-    default_gravity_ori = np.array([0, 0, 1])
-
-    # 计算旋转轴（通过叉积获得）
-    rotation_axis = np.cross(default_gravity_ori, target_ori)
-    rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)  # 归一化
-    # 计算旋转角度（通过点积获得）
-    cos_theta = np.dot(default_gravity_ori, target_ori)
-    theta = np.arccos(cos_theta)  # 旋转角度
-    # 使用旋转轴和旋转角度来创建四元数
-    rotation_quaternion = p.getQuaternionFromAxisAngle(rotation_axis, theta)
-    return rotation_quaternion
-
-#计算两个四元数的角度误差
-# 计算四元数之间的旋转角度误差
-def quaternion_error(q1, q2):
-    # q1, q2 是四元数，应该是单位四元数，格式为 [w, x, y, z]
-    
-    # 转换四元数为旋转对象
-    r1 = R.from_quat(q1)
-    r2 = R.from_quat(q2)
-    
-    # 计算两者之间的相对旋转
-    relative_rotation = r1.inv() * r2
-    
-    # 获取相对旋转的角度（弧度）
-    angle_error = relative_rotation.magnitude()  # 角度误差（弧度）
-    
-    return angle_error
-
-#计算当前位置与期望位置差的角度
-def calculate_theta(panda,left_finger_id,right_finger_id,grasp_endpoint_1,grasp_endpoint_2,object_T_global):
-    # 获取左手指的位姿
-    left_finger_state = p.getLinkState(panda, left_finger_id)
-    left_finger_pos, left_finger_orn = left_finger_state[0], left_finger_state[1]
-    #print(f"左手指位置: {left_finger_pos}, 方向: {left_finger_orn}")
-    # 获取右手指的位姿
-    right_finger_state = p.getLinkState(panda, right_finger_id)
-    right_finger_pos, right_finger_orn = right_finger_state[0], right_finger_state[1]
-    #两个手指实际的向量
-    finger_ori=np.array(left_finger_pos)-np.array(right_finger_pos)
-    #计算期望的两个夹取点在世界坐标系下的向量
-    left_finger_target=objectpoint_T_global(grasp_endpoint_1,object_T_global)
-    right_finger_target=objectpoint_T_global(grasp_endpoint_2,object_T_global)
-    expect_finger_ori=np.array(left_finger_target)-np.array(right_finger_target)
-    #计算joint7需要旋转的角度
-    # 1. 计算两个向量的点积
-    dot_product = np.dot(expect_finger_ori, finger_ori)
-    # 2. 计算两个向量的模
-    A_norm = np.linalg.norm(expect_finger_ori)
-    B_norm = np.linalg.norm(finger_ori)
-    # 3. 计算夹角 (theta)
-    cos_theta = dot_product / (A_norm * B_norm)
-    theta = np.arccos(np.clip(cos_theta, -1.0, 1.0))  # 用 np.clip 防止数值误差
-    return theta
-
 #给定三个点，计算这三个点形成的平面的法向量
 def calculate_normal_from_points(A,B,C):
     # 给定三个点的坐标
@@ -270,45 +320,6 @@ def calculate_normal_from_points(A,B,C):
     v_normalized = normal_vector / np.linalg.norm(normal_vector)
     return v_normalized
 
-#由给出的三个点来计算夹爪抓取的方向
-def calculate_gripper_ori(A,B,C):
-
-    # 定义点 A, B, C 的坐标 (x, y, z)
-    A = np.array(A)  # 点 A 的坐标
-    B = np.array(B)  # 点 B 的坐标
-    C = np.array(C)  # 点 C 的坐标
-
-    # 计算向量 BA 和 BC
-    BA = A - B  # 向量 BA = A - B
-    BC = C - B  # 向量 BC = C - B
-
-    # 计算叉积 BA × BC，得到垂直的向量
-    v = np.cross(BA, BC)
-    vec=np.cross(v,BC)
-
-    # 确保向量 v 指向 A
-    # 计算 v 和 BA 的点积，决定是否反向
-    if np.dot(vec, BA) > 0:
-        vec = -vec  # 如果 v 的方向与 BA 的方向相反，则反向 v
-
-    # 对结果向量进行标准化处理，得到单位向量
-    v_normalized = vec / np.linalg.norm(vec)
-
-    return v_normalized
-
-#执行关闭夹爪的动作
-def close_finger(panda):
-
-    p.setJointMotorControl2(panda, left_finger_id, p.POSITION_CONTROL, targetPosition=0,force=target_force,targetVelocity=target_velocity)
-
-    p.setJointMotorControl2(panda, right_finger_id, p.POSITION_CONTROL, targetPosition=0,force=target_force,targetVelocity=target_velocity)
-    for i in range(720):
-        p.stepSimulation()
-        #time.sleep(time_step)
-    #time.sleep(100)
-
-    return 0
-
 #计算抓取位置并执行动作，计算需要目标位置和抓取靠近的角度两个量
 def step(panda,object_T_global,grasp_center,grasp_endpoints,log,opnum,center_of_mass):
 
@@ -318,131 +329,91 @@ def step(panda,object_T_global,grasp_center,grasp_endpoints,log,opnum,center_of_
     grasp_center=objectpoint_T_global(grasp_center,object_T_global)
     left_finger_target=objectpoint_T_global(grasp_endpoints[0],object_T_global)
     right_finger_target=objectpoint_T_global(grasp_endpoints[1],object_T_global)
-    #通过将夹爪坐标系里的两个点映射到世界坐标系来确定抓取方向
-    gripper_ori=calculate_gripper_ori(grasp_center,left_finger_target,right_finger_target)
-    print(gripper_ori)
-    rotation_quaternion=gripper_ori_T_rotation_quaternion(gripper_ori)
-    #将物体坐标系中的抓取点映射到世界坐标系中作为目标抓取点
-    target_position=target_position+args.depth*np.linalg.norm(gripper_ori)
-    #target_position=target_position+0.05*np.linalg.norm(gripper_ori)
-    #print("希望的抓取点：",target_position)
+
     #添加辅助线，用来表示希望的抓取点形成的向量
     p.addUserDebugLine(left_finger_target,right_finger_target, [0, 1, 0], lineWidth=5)
     #创建一个球体，用来表示目标抓取点
     sphere_1=create_sphere(target_position,0.005,[1,0,0,0.5])
-    sphere_3=create_sphere(grasp_center,0.005,[0,0,1,0.5])
 
-    #对末端执行器进行反向运动学计算，让机械臂末端以指定角度到达目标点
-    panda_joint_poses = p.calculateInverseKinematics(
-        panda,
-        end_effector_id,
-        target_position,
-        targetOrientation=rotation_quaternion,
-        lowerLimits=ll,
-        upperLimits=ul,
-        jointRanges=jr,
-        restPoses=rp,
-        maxNumIterations=500
-    )
-    #根据上面算出来的机械臂关节位置执行动作
-    for joint_index in range(len(panda_joint_poses)):
-        p.setJointMotorControl2(
-            bodyUniqueId=panda,
-            jointIndex=joint_index,
-            controlMode=p.POSITION_CONTROL,
-            targetPosition=panda_joint_poses[joint_index],
-            force=target_force  # 增加力矩以抵消重力
-    )
-    #设置两个夹爪宽度
-    p.setJointMotorControl2(panda, left_finger_id, p.POSITION_CONTROL, targetPosition=finger_max_position,
-                            force=target_force, maxVelocity=target_velocity)
-    p.setJointMotorControl2(panda, right_finger_id, p.POSITION_CONTROL, targetPosition=finger_max_position,
-                            force=target_force, maxVelocity=target_velocity)
-    #执行仿真，让机械臂到达指定位置
-    for j in range(240):  
-        p.stepSimulation()
-        #time.sleep(time_step)
-    
-    #判断仿真后得到的机械臂的末端执行器的位置与希望的抓取点的位置的差值，用来判断机械臂位置是否正确
-    end_effort_pos = p.getLinkState(panda, end_effector_id)[0]
-    end_effector_orn=p.getLinkState(panda, end_effector_id)[1]
-    pos_error=np.array(end_effort_pos)-np.array(target_position)
-    #如果误差过大，则返回flags=-1,改变机械臂的摆放位置再次仿真
-    if np.linalg.norm(pos_error)>0.001 :
-        p.removeBody(sphere_1)
-        p.removeBody(sphere_3)
-        flags=-1
-        return flags,panda,-1,log,-1,-1
-    orn_error=quaternion_error(end_effector_orn,rotation_quaternion)
-    if np.linalg.norm(orn_error)>0.1 :
-        p.removeBody(sphere_1)
-        p.removeBody(sphere_3)
-        flags=-1
-        return flags,panda,-1,log,-1,-1
-
-    #获取当前joint6的关节状态，第一个代表旋转角度
-    theta_1=p.getJointState(panda,gripper_orn_revolute_id)[0]
-    #计算期望抓取方向与现在状态的相差的角度值
-    theta=calculate_theta(panda,left_finger_id,right_finger_id,grasp_endpoints[0],grasp_endpoints[1],object_T_global)
-
-    # 控制关节旋转到目标角度
-    p.setJointMotorControl2(
-        bodyUniqueId=panda,              # Panda 机械臂的 ID
-        jointIndex=gripper_orn_revolute_id,                    # panda_joint7 的索引
-        controlMode=p.POSITION_CONTROL,  # 使用位置控制模式
-        targetPosition=theta_1-theta,    # 设置目标角度
-        force=target_force               # 最大控制力
-        )
-    #执行仿真，让机械臂夹爪旋转到目标位置
-    for j in range(240):
-        p.stepSimulation()
-        #time.sleep(time_step)
-        
-    #打印执行后的信息，用来判断执行后姿势的准确性
-    theta_error=print_message(panda,object_T_global,grasp_endpoints,target_position)
-    #如果转动角度不对，则向另一个方向旋转
-    if np.linalg.norm(theta_error)>0.1:
-        p.setJointMotorControl2(
-            bodyUniqueId=panda,             # Panda 机械臂的 ID
-            jointIndex=gripper_orn_revolute_id,                   # panda_joint7 的索引
-            controlMode=p.POSITION_CONTROL, # 使用位置控制模式
-            targetPosition=theta_1+theta,   # 设置目标角度
-            force=target_force              # 最大控制力
-            )
-        for j in range(240):
-            p.stepSimulation()
-            #time.sleep(time_step)
-    theta_error=print_message(panda,object_T_global,grasp_endpoints,target_position)
-    if np.linalg.norm(theta_error)>0.1:
-        p.removeBody(sphere_1)
-        p.removeBody(sphere_3)
-        flags=-1
-        return flags,panda,-1,log,-1,-1
-    #获取左手指关节的位置
-    left_finger_pos = p.getLinkState(panda, left_finger_id)[0]
-    # 获取右手指关节的位置
-    right_finger_pos = p.getLinkState(panda, right_finger_id)[0]
-    #添加辅助线，用来表示实际的抓取点形成的向量
-    p.addUserDebugLine(left_finger_pos,right_finger_pos, [0, 0, 1], lineWidth=5)
     #重新加载物体，可视化质心位置
     object,constraint = create_object()
     object_pos,object_ori=p.getBasePositionAndOrientation(object)
     sphere_2=create_sphere(object_pos,0.005,[1,1,0])
-    #关闭夹爪
-    close_finger(panda)
+
+    #设置两个夹爪宽度
+    p.setJointMotorControl2(
+                bodyUniqueId=panda,
+                jointIndex=left_finger_id,
+                controlMode=p.POSITION_CONTROL,
+                targetPosition=0.2,
+                force=target_force
+    )
+    p.setJointMotorControl2(
+                bodyUniqueId=panda,
+                jointIndex=right_finger_id,
+                controlMode=p.POSITION_CONTROL,
+                targetPosition=0.2,
+                force=target_force
+    )
+    p.setJointMotorControl2(
+                bodyUniqueId=panda,
+                jointIndex=middle_finger_id,
+                controlMode=p.POSITION_CONTROL,
+                targetPosition=0.2,
+                force=target_force
+    )
+    for i in range(240):
+        for h in range(2):
+            p.stepSimulation()
+        contact_1=p.getContactPoints(panda,object,left_finger_id)
+        for contact in contact_1:
+            if contact[8]<-0.003:
+                    left_joint=p.getJointState(panda,left_finger_id)[0]
+                    p.setJointMotorControl2(
+                    bodyUniqueId=panda,
+                    jointIndex=left_finger_id,
+                    controlMode=p.POSITION_CONTROL,
+                    targetPosition=left_joint,
+                    force=target_force
+                )
+        contact_2=p.getContactPoints(panda,object,right_finger_id)
+        for contact in contact_2: 
+            if contact[8]<-0.003:
+                    right_joint=p.getJointState(panda,right_finger_id)[0]    
+                    p.setJointMotorControl2(
+                        bodyUniqueId=panda,
+                        jointIndex=right_finger_id,
+                        controlMode=p.POSITION_CONTROL,
+                        targetPosition=right_joint,
+                        force=target_force
+            )
+        contact_3=p.getContactPoints(panda,object,middle_finger_id)
+        for contact in contact_3: 
+            if contact[8]<-0.003:
+                    middle_joint=p.getJointState(panda,middle_finger_id)[0]
+                    p.setJointMotorControl2(
+                        bodyUniqueId=panda,
+                        jointIndex=middle_finger_id,
+                        controlMode=p.POSITION_CONTROL,
+                        targetPosition=middle_joint,
+                        force=target_force
+            )
+
+
+    #执行仿真，让机械臂到达指定位置
+    for j in range(240):  
+        p.stepSimulation()
+        #time.sleep(time_step)
     p.removeBody(sphere_1)
     p.removeBody(sphere_2)
-    p.removeBody(sphere_3)
     p.removeAllUserDebugItems()
     #使用相机记录此时的姿势
     carmer_photo(opnum,grasp_center,left_finger_target,right_finger_target,target_position)
     #记录初始时末端执行器的位置和方向，将方向转化为3x3数组
-    end_effector_pos_1 = p.getLinkState(panda, end_effector_id)[0]
     object_pos_1,object_ori=p.getBasePositionAndOrientation(object)
-    end_effector_orn_1 = p.getLinkState(panda, end_effector_id)[1]
-    matrix_1=quaternion_to_rotation_matrix_panda(end_effector_orn_1)
+    matrix_1=quaternion_to_rotation_matrix_panda(object_ori)
     #记录初始时的机械臂和物体接触信息
-    contact_point_1,log=record(panda,object,log,center_of_mass) 
+    contact_point_1,log=record(panda,object,log,center_of_mass,flag=False) 
     #撤去对物体的位置限制
     p.removeConstraint(constraint)
     #进行仿真，五秒，认为物体可以保持稳定
@@ -450,25 +421,21 @@ def step(panda,object_T_global,grasp_center,grasp_endpoints,log,opnum,center_of_
         p.stepSimulation()
         #time.sleep(time_step)
     #记录稳定后末端执行器的位置和方向，将方向转化为3x3数组
-    end_effector_pos_2 = p.getLinkState(panda, end_effector_id)[0]
+
     object_pos_2,object_ori=p.getBasePositionAndOrientation(object)
-    end_effector_move_distance = np.linalg.norm(
-        np.array(end_effector_pos_1)-np.array(object_pos_1) - np.array(end_effector_pos_2)+np.array(object_pos_2)) 
-    end_effector_orn_2 = p.getLinkState(panda, end_effector_id)[1]
-    matrix_2 = quaternion_to_rotation_matrix_panda(end_effector_orn_2)
+    obj_center_move_distance = np.linalg.norm(np.array(object_pos_1)-np.array(object_pos_2)) 
+    matrix_2 = quaternion_to_rotation_matrix_panda(object_ori)
     #计算稳定前后末端执行器移动的空间角（弧度值）
     angle=rotation_matrix_angle(matrix_1,matrix_2)
     #记录稳定时的机械臂和物体接触信息,返回当前接触点
-    contact_point_2,log=record(panda,object,log,center_of_mass)
+    contact_point_2,log=record(panda,object,log,center_of_mass,flag=True)
     #如果两个接触点均非0，说明最后抓取成功，返回一个标志值flags用来判断是否继续执行质量增加的仿真
     #if isinstance(contact_point_1, list) and isinstance(contact_point_2, list):
     if len(contact_point_1)>0 and len(contact_point_2)>0:
             flags=True
             if flags==True:
                 log.iloc[-1, 2] = angle
-                log.iloc[-1, 3] = end_effector_move_distance
-                log.at[log.index[-1], '末端执行器位置'].append(tuple(np.array(end_effector_pos_1)-np.array(object_pos_1)))
-                log.at[log.index[-1], '末端执行器位置'].append(tuple(np.array(end_effector_pos_2)-np.array(object_pos_2)))  
+                log.iloc[-1, 3] = obj_center_move_distance 
             return flags,panda,object,log,object_pos_1,matrix_1
     else:
         flags=False
@@ -484,7 +451,7 @@ def get_center_of_mass_from_mesh():
     center_of_mass,total_area=compute_mesh_center_of_mass_and_area(vertices,faces)
     return center_of_mass,total_area
 
-#计算mesh的质心位置,在物体坐标系中的位置
+#计算mesh的质心位置
 def compute_mesh_center_of_mass_and_area(vertices: torch.Tensor, faces: torch.Tensor):
     """
     计算网格的质心，使用面片面积加权计算每个三角形的质心。
@@ -525,7 +492,7 @@ def compute_mesh_center_of_mass_and_area(vertices: torch.Tensor, faces: torch.Te
     return center_of_mass, total_area
 
 #在稳定后逐渐增加物体的质量
-def increase_mass(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id,pose_num,center_of_mass):
+def increase_mass(flags,panda,object):
     if flags==True:
         new_mass=1
         for i in range(10000):
@@ -539,14 +506,81 @@ def increase_mass(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id
             contact_points = p.getContactPoints(panda, object)  # 获取机械臂与积木的接触点
             if len(contact_points)==0:
                 return new_mass
+
+    else :
+        return -1
+
+#在稳定后逐渐减小机械臂的力
+def decrease_froce(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id,pose_num,center_of_mass):
+    if flags==True:
+        new_force=50
+        for i in range(10000):
+        # 每1秒减少N的力
+            new_force -= 0.2
+            if new_force<=0:
+                break
+            p.setJointMotorControl2(panda, left_finger_id, p.POSITION_CONTROL, targetPosition=0.2,
+                            force=new_force, maxVelocity=target_velocity)
+            p.setJointMotorControl2(panda, right_finger_id, p.POSITION_CONTROL, targetPosition=0.2,
+                            force=new_force, maxVelocity=target_velocity)
+            p.setJointMotorControl2(panda, middle_finger_id, p.POSITION_CONTROL, targetPosition=0.2,
+                            force=new_force, maxVelocity=target_velocity)
+            for i in range(240):
+                for h in range(2):
+                    p.stepSimulation()
+                contact_1=p.getContactPoints(panda,object,left_finger_id)
+                for contact in contact_1:
+                    if contact[8]<-0.003:
+                            left_joint=p.getJointState(panda,left_finger_id)[0]
+                            p.setJointMotorControl2(
+                            bodyUniqueId=panda,
+                            jointIndex=left_finger_id,
+                            controlMode=p.POSITION_CONTROL,
+                            targetPosition=left_joint,
+                            force=target_force
+                        )
+                contact_2=p.getContactPoints(panda,object,right_finger_id)
+                for contact in contact_2: 
+                    if contact[8]<-0.003:
+                            right_joint=p.getJointState(panda,right_finger_id)[0]    
+                            p.setJointMotorControl2(
+                                bodyUniqueId=panda,
+                                jointIndex=right_finger_id,
+                                controlMode=p.POSITION_CONTROL,
+                                targetPosition=right_joint,
+                                force=target_force
+                    )
+                contact_3=p.getContactPoints(panda,object,middle_finger_id)
+                for contact in contact_3: 
+                    if contact[8]<-0.003:
+                            middle_joint=p.getJointState(panda,middle_finger_id)[0]
+                            p.setJointMotorControl2(
+                                bodyUniqueId=panda,
+                                jointIndex=middle_finger_id,
+                                controlMode=p.POSITION_CONTROL,
+                                targetPosition=middle_joint,
+                                force=target_force
+                    )
+
+            print(new_force)
+            for j in range(240):
+                p.stepSimulation()
+                #time.sleep(time_step)
+            contact_points = p.getContactPoints(panda, object)  # 获取机械臂与积木的接触点
+            if len(contact_points)==0:
+                return new_force
             left_joint_states = p.getJointState(panda, left_finger_id)
             left_actual_force = left_joint_states[3]  # 第四个值是实际施加的力/力矩
+            print(f"Actual force: {left_actual_force}")
             right_joint_states = p.getJointState(panda, right_finger_id)
             right_actual_force = right_joint_states[3]  # 第四个值是实际施加的力/力矩
+            print(f"Actual force: {right_actual_force}")
+            middle_joint_states = p.getJointState(panda, middle_finger_id)
+            middle_actual_force = middle_joint_states[3]  # 第四个值是实际施加的力/力矩
+            print(f"Actual force: {middle_actual_force}")
             object_pos_2,object_ori=p.getBasePositionAndOrientation(object)
             obj_center_move_distance = np.linalg.norm(np.array(object_pos_1)-np.array(object_pos_2)) 
-            end_effector_orn_2 = p.getLinkState(panda, end_effector_id)[1]
-            matrix_2 = quaternion_to_rotation_matrix_panda(end_effector_orn_2)
+            matrix_2 = quaternion_to_rotation_matrix_panda(object_ori)
             #计算稳定前后末端执行器移动的空间角（弧度值）
             angle=rotation_matrix_angle(matrix_1,matrix_2)
             # 初始化一行数据为 None
@@ -554,54 +588,15 @@ def increase_mass(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id
             #初始化设置log
             log_1=initialization_log_1(log_1)
             log_1.iloc[-1, 0] = f"{scene_id}_{obj_id}_{pose_num}"
-            log_1.iloc[-1, 1] = f"left:{left_actual_force},right:{right_actual_force}"
-            log_1.iloc[-1, 2] = new_mass
+            log_1.iloc[-1, 1] = f"left:{left_actual_force},right:{right_actual_force},middle:{middle_actual_force}"
+            log_1.iloc[-1, 2] = mass
             log_1.iloc[-1, 3] = angle
             log_1.iloc[-1, 4] = obj_center_move_distance
-            log_1=record_increase_mass(panda,object,log_1,center_of_mass)
-            log_1.to_csv(f'{output_path}_{pose_num}_increase_mass.csv', index=True,na_rep='NA')
+            log_1=record_decrease_force(panda,object,log_1,center_of_mass)
+            log_1.to_csv(f'{output_path}_{pose_num}_decrease_froce.csv', index=True,na_rep='NA')
 
     else :
         return -1
-    
-#初始化log_1.csv文件
-def initialization_log_1(log_1):
-    log_1.at[log_1.index[-1], '接触点位置'] = []
-    log_1.at[log_1.index[-1], '正向接触力'] = []
-    log_1.at[log_1.index[-1], '侧向摩擦力'] = []
-    log_1.at[log_1.index[-1], '相对于物体质心的距离'] = []
-    log_1.at[log_1.index[-1], '在物体坐标系中的坐标'] = []
-    return log_1
-
-#记录抓取力降低过程中的信息
-def record_increase_mass(panda_id, object,log_1,center_of_mass):
-    # 获取接触点信息
-    contact_points = get_grasp_contact_points(panda_id, object)
-
-    if len(contact_points) > 0:
-        # 获取物体质心的初始位置和方向
-        object_pos, object_orn = p.getBasePositionAndOrientation(object)
-        #减去质心的偏移所得到的是物体实际摆放的位置
-        #object_pos=np.array(object_pos)-np.array(center_of_mass)
-        object_T_global=get_object_matrix(object,center_of_mass)
-
-        # 将接触点信息存储到文件，进行进一步处理
-        log_1.at[log_1.index[-1],'物体质心位置'] = object_pos
-        for contact in contact_points:
-                log_1.at[log_1.index[-1], '接触点位置'].append(contact['position_gripper'])
-                log_1.at[log_1.index[-1], '正向接触力'].append(contact['normalforce'])
-                log_1.at[log_1.index[-1], '侧向摩擦力'].append(contact['lateralforce1'])
-                #计算接触点相对于质心的距离
-                dictance_contact,gravity_ori_contact=calculate_distance_and_gravity_ori_world(contact['position_gripper'],object_pos)
-                log_1.at[log_1.index[-1], '相对于物体质心的距离'].append(dictance_contact)
-                #计算接触点在物体坐标系的位置
-                contact_position=objectpoint_T_global(contact['position_gripper'],np.linalg.inv(object_T_global))
-                log_1.at[log_1.index[-1], '在物体坐标系中的坐标'].append(tuple(contact_position))
-
-        return log_1
-
-    else :
-        return log_1 
 
 # 获得接触点的信息
 def get_grasp_contact_points(panda_id, object_id):
@@ -684,7 +679,7 @@ def quaternion_to_rotation_matrix_panda(quat):
     matrix = np.array(rotation).reshape(3, 3)
     return  matrix
 
-#初始化.csv文件
+#初始化log.csv文件
 def initialization_log(log):
     log.at[log.index[-1], '末端执行器位置'] = []
     log.at[log.index[-1], '机械臂位置'] = []
@@ -699,8 +694,17 @@ def initialization_log(log):
     log.at[log.index[-1], '在物体坐标系中的坐标'] = []
     return log
 
+#初始化log_1.csv文件
+def initialization_log_1(log_1):
+    log_1.at[log_1.index[-1], '接触点位置'] = []
+    log_1.at[log_1.index[-1], '正向接触力'] = []
+    log_1.at[log_1.index[-1], '侧向摩擦力'] = []
+    log_1.at[log_1.index[-1], '相对于物体质心的距离'] = []
+    log_1.at[log_1.index[-1], '在物体坐标系中的坐标'] = []
+    return log_1
+
 #记录接触点信息
-def record(panda_id, object,log,center_of_mass):
+def record(panda_id, object,log,center_of_mass,flag):
     # 获取接触点信息
     contact_points = get_grasp_contact_points(panda_id, object)
 
@@ -712,14 +716,14 @@ def record(panda_id, object,log,center_of_mass):
         object_T_global=get_object_matrix(object,center_of_mass)
 
         # 将接触点信息存储到文件，进行进一步处理
-
         log.at[log.index[-1],'物体质心位置'] = object_pos
         for contact in contact_points:
                 log.at[log.index[-1], '接触点位置'].append(contact['position_gripper'])
                 log.at[log.index[-1], '法线'].append(contact['normal'])
                 log.at[log.index[-1], '距离'].append(contact['distance'])
-                log.at[log.index[-1], '正向接触力'].append(contact['normalforce'])
-                log.at[log.index[-1], '侧向摩擦力'].append(contact['lateralforce1'])
+                if flag==True :
+                    log.at[log.index[-1], '正向接触力'].append(contact['normalforce'])
+                    log.at[log.index[-1], '侧向摩擦力'].append(contact['lateralforce1'])
                 #计算接触点相对于质心的距离
                 dictance_contact,gravity_ori_contact=calculate_distance_and_gravity_ori_world(contact['position_gripper'],object_pos)
                 log.at[log.index[-1], '相对于物体质心的距离'].append(dictance_contact)
@@ -734,38 +738,72 @@ def record(panda_id, object,log,center_of_mass):
         empty_list=[] 
         return empty_list,log  
 
+#记录抓取力降低过程中的信息
+def record_decrease_force(panda_id, object,log_1,center_of_mass):
+    # 获取接触点信息
+    contact_points = get_grasp_contact_points(panda_id, object)
+
+    if len(contact_points) > 0:
+        # 获取物体质心的初始位置和方向
+        object_pos, object_orn = p.getBasePositionAndOrientation(object)
+        #减去质心的偏移所得到的是物体实际摆放的位置
+        #object_pos=np.array(object_pos)-np.array(center_of_mass)
+        object_T_global=get_object_matrix(object,center_of_mass)
+
+        # 将接触点信息存储到文件，进行进一步处理
+        log_1.at[log_1.index[-1],'物体质心位置'] = object_pos
+        for contact in contact_points:
+                log_1.at[log_1.index[-1], '接触点位置'].append(contact['position_gripper'])
+                log_1.at[log_1.index[-1], '正向接触力'].append(contact['normalforce'])
+                log_1.at[log_1.index[-1], '侧向摩擦力'].append(contact['lateralforce1'])
+                #计算接触点相对于质心的距离
+                dictance_contact,gravity_ori_contact=calculate_distance_and_gravity_ori_world(contact['position_gripper'],object_pos)
+                log_1.at[log_1.index[-1], '相对于物体质心的距离'].append(dictance_contact)
+                #计算接触点在物体坐标系的位置
+                contact_position=objectpoint_T_global(contact['position_gripper'],np.linalg.inv(object_T_global))
+                log_1.at[log_1.index[-1], '在物体坐标系中的坐标'].append(tuple(contact_position))
+
+        return log_1
+
+    else :
+        return log_1  
+
 #读取json文件中的信息，返回抓取姿势(从夹爪mesh到物体mesh的变换矩阵，4x4)，抓取中心点(物体坐标系中)，两个抓取端点(物体坐标系中)
-def read_json(obj_key,i):
-    obj_key=int(obj_key)
+def read_json(i):
     # 读取 JSON 文件并提取 gripper_pose 字段
     with open(json_path, 'r') as f:
         gripper_data = json.load(f)
     
     # 确保 i 不超过 gripper_data 的长度
     if i < len(gripper_data):
-        if obj_key < len(gripper_data):
-            # 遍历每个 gripper pose
-            data = gripper_data[obj_key]
-            #gripper_pose = data["gripper_pose"]
-            grasp_center = data["center_"]
-            grasp_endpoints = data["endpoints"]
-            gravity = data["gravity"]
-            obj_id = data["obj_id"]
-            cam_id = data["cam_id"]
-            scene_id = data["scene_id"]
-            
-            if grasp_center and grasp_endpoints:
-                flag = True  # 数据有效
-            else:
-                flag = False  # 数据无效
-        else :
-            flag = False
-            return 0,0,(0,0,-1),flag
+        # 遍历每个 gripper pose
+        data = gripper_data[i]
+        #gripper_pose = data["gripper_pose"]
+        grasp_center = data["center_"]
+        grasp_endpoints = data["endpoints"]
+        gravity = data["gravity"]
+        obj_id = data["obj_id"]
+        cam_id = data["cam_id"]
+        scene_id = data["scene_id"]
+        gripper_ori = data["vector"]
+        
+        if grasp_center and grasp_endpoints:
+            flag = True  # 数据有效
+        else:
+            flag = False  # 数据无效
     else :
         flag = False
-        return 0,0,(0,0,-1),flag,-1,-1
+        return 0,0,0,(0,0,-1),flag,0,0
 
-    return grasp_center,grasp_endpoints,gravity,flag,obj_id,scene_id
+    # # 提取旋转矩阵和位移向量
+    # rotation_matrix = np.array(gripper_pose[:3])  # 旋转矩阵 3x3
+    # translation_vector = np.array(gripper_pose[3:])  # 位移向量 3
+    # # 创建 4x4 变换矩阵
+    # transformation_matrix = np.eye(4)  # 创建 4x4 的单位矩阵
+    # transformation_matrix[:3, :3] = rotation_matrix  # 设置旋转矩阵
+    # transformation_matrix[:3, 3] = translation_vector  # 设置平移向量
+
+    return grasp_center,grasp_endpoints,gripper_ori,gravity,flag,obj_id,scene_id
 
 #计算从物体坐标系到世界坐标系的变化矩阵，4*4的，包括旋转和平移
 def get_object_matrix(object,center_of_mass):
@@ -797,10 +835,6 @@ def normalized(A):
 #用于打印一些机械臂和物体信息，返回当前机器手指的向量与期望向量的差值
 def print_message(panda,object_T_global,grasp_endpoints,target_position):
     #获取末端执行器的位姿
-    end_effector_state = p.getLinkState(panda, end_effector_id)
-    end_effector_pos, end_effector_orn = end_effector_state[0], end_effector_state[1]
-    #print(f"末端执行器位置: {end_effector_pos}, 方向: {end_effector_orn}")
-    #print("期望末端执行器位置的差",np.array(target_position)-np.array(end_effector_pos))
     # 获取左手指的位姿
     left_finger_state = p.getLinkState(panda, left_finger_id)
     left_finger_pos, left_finger_orn = left_finger_state[0], left_finger_state[1]
@@ -825,18 +859,6 @@ def print_message(panda,object_T_global,grasp_endpoints,target_position):
     #print("抓取方向的差",expect_finger_ori-finger_ori)
     return expect_finger_ori-finger_ori
 
-#以（0.5,0.5）为圆心，均匀生成40个点坐标作为机械臂备选位置点
-def generate_circle_points(center, radius, num_points):
-    # 角度从 0 到 2*pi 均匀分布，顺时针方向
-    num_points=int(num_points/4)
-    angles = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
-    points_1 = [(center[0] - radius * np.cos(angle), center[1] - radius * np.sin(angle),0.5) for angle in angles]
-    points_2 = [(center[0] - radius * np.cos(angle), 0.5,center[2] - radius * np.sin(angle)) for angle in angles]
-    points_with_z_03 = [(x,y,z-0.1) for x, y, z in points_1]
-    points_with_z_07 = [(x,y,z+0.1) for x, y, z in points_1]
-    points=[center]+points_1+points_2+points_with_z_03+points_with_z_07
-    return points
-
 #设置重力
 def gravity_setting(gravity):
     gravity_ori = np.array(gravity)
@@ -847,13 +869,13 @@ def gravity_setting(gravity):
 if __name__=="__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-m", "--modle",help="被抓物体obj文件路径", default="obj/scene_0102/9_simple.obj")
-    parser.add_argument("-g", "--grasp_json",help="grasp.json文件路径", default="json/scene_0102/0000_0009.json")
-    parser.add_argument("-op", "--output_path",help="输出结果文件路径", default="output/scene_0102/09")
+    parser.add_argument("-m", "--modle",help="被抓物体obj文件路径", default="filter_obj_json/json/0000_0000.json")
+    parser.add_argument("-g", "--grasp_json",help="grasp.json文件路径", default="merged_json/0000_0051.json")
+    parser.add_argument("-op", "--output_path",help="输出结果文件路径", default="filter_obj_json/output")
     parser.add_argument("-p", "--position", help="机械臂设定的位置", default=[0,0,0])
     parser.add_argument("--center_of_mass", help="物体设定的质心位置,相对物体坐标系而言", default=[0,0,0])
     parser.add_argument("--object_position", help="物体在世界坐标系下的位置", default=[0.5,0.5,0.5])
-    parser.add_argument("--num_points",help="每次仿真最多的机械臂采样位置个数",default=100)
+
     parser.add_argument("-gr","--gravity_ori",help="重力方向",default=(0,0,-1))
     parser.add_argument("-dp","--depth",help="抓取深度",default=0)
     args = parser.parse_args()
@@ -862,16 +884,17 @@ if __name__=="__main__":
     total_time = 0
     #物体质量
     mass = 1
-    p.connect(p.DIRECT)
-    #p.connect(p.GUI)
+    #p.connect(p.DIRECT)
+    p.connect(p.GUI)
     # 将一个目录路径添加到 PyBullet 的文件搜索路径中，之后PyBullet 在加载资源文件时，会同时搜索该路径下的文件
     path=p.setAdditionalSearchPath(pybullet_data.getDataPath())
     # 物体设置
-    mesh_path = args.modle
+    #mesh_path = args.modle
 
-    center_of_mass=args.center_of_mass
     object_position = args.object_position
-    output_path=args.output_path
+    #output_path=args.output_path
+    template_urdf = "3cylinder.urdf"  # 模板文件路径
+    output_urdf = "3cylinder_generatedurdf"   # 输出文件路径
     #物体缩放比例
     mesh_scale = [1, 1, 1]
     #机械臂在世界坐标系下的的放置位置，根关节
@@ -881,8 +904,6 @@ if __name__=="__main__":
     start_point_1 = [1, 0, 0]
     start_point_2 = [0, 0, 0]
 
-    # 定义夹爪初始宽度
-    finger_max_position = 0.1  # 最大夹爪位置（初始完全张开）
     #机械臂运动最大速度和力
     target_velocity = 0.2
     target_force = 50
@@ -890,78 +911,56 @@ if __name__=="__main__":
     friction_object = 0.6
     friction_gripper = 0.6
     #左右手指，末端执行器索引
-    left_finger_id = 7
-    right_finger_id = 8
-    end_effector_id = 9
-    #控制夹爪旋转关节索引
-    gripper_orn_revolute_id = 5
-
-    pandaNumDofs = 7
-    # 关节的最小角度限制（下限），即每个关节的最小允许位置（弧度）
-    ll = [-4]*pandaNumDofs
-    # 关节的最大角度限制（上限），即每个关节的最大允许位置（弧度）
-    ul = [4]*pandaNumDofs
-    # 关节的运动范围（上限 - 下限）,这里为什么设置的不是这样？
-    jr = [8]*pandaNumDofs
-    jointPositions=[0.98, 0.458, 0.31, -2.24, -0.30, 2.66, 2.32, 0.02, 0.02]
-    rp = jointPositions
-    #设置机械臂采样点
-    center=object_position
-    # radius = np.linalg.norm(np.array(center) - np.array(gripper_basePosition[:2]))
-    num_points = args.num_points
-    gripper_pos_list = generate_circle_points(center, 0.05, num_points)
+    left_finger_id = 0
+    right_finger_id = 1
+    middle_finger_id=2
 
     start_time=time.time()
-    base_dir = "filter_obj_json2025.1.14"
+    base_dir = "3gripper_data"
     json_base = "json"
-    obj_base = "change_obj/PAG"
-    output_base = "output/increase_mass"
+    obj_base = "obj"
+    output_base = "3gripper_output/decrease_froce"
     json_dir = os.path.join(base_dir, json_base)
     obj_dir = os.path.join(base_dir, obj_base)
-    output_dir = os.path.join(base_dir, output_base ,obj_base)
+    output_dir = os.path.join(base_dir, output_base ,f"{obj_base}")
     os.makedirs(output_dir,exist_ok=True)
+
     # 遍历 JSON 文件夹的子文件夹
     for scene_folder in sorted(os.listdir(json_dir)):
             if scene_folder.endswith(".json"):
-                #if scene_folder=="0000_0021.json":
+                #if scene_folder=="0000_0002.json":
                     # JSON 文件路径
                     json_file_path = os.path.join(json_dir, scene_folder)
                     # 提取 JSON 文件名中的关键字（不含扩展名）
-                    json_key = scene_folder.split('_')[-1].split('.')[0]
-
-                    obj_file_path=os.path.join(obj_dir,json_key)
-                    if not os.path.exists(obj_file_path):
-                        print(f"警告：未找到对应的 OBJ 文件夹 {obj_file_path}")
-                        continue 
+                    json_key = scene_folder.split('_')[-1].split('.')[0] 
 
                     # 找到对应的 OBJ 文件
                     matched_obj_file = None
-                    for obj_file in os.listdir(obj_file_path):
+                    for obj_file in os.listdir(obj_dir):
                         if obj_file.endswith(".obj") and obj_file.startswith(f"{int(json_key)}_"):
                             matched_obj_file = obj_file
-                            obj_key = obj_file.split('_')[-1].split('.')[0]
+                            break
 
-                            # 如果找不到对应的 OBJ 文件，跳过
-                            if not matched_obj_file:
-                                print(f"Warning: No matching OBJ file for {scene_folder}")
-                                continue
+                    # 如果找不到对应的 OBJ 文件，跳过
+                    if not matched_obj_file:
+                        print(f"Warning: No matching OBJ file for {scene_folder}")
+                        continue
 
-                            # 读取 OBJ 文件内容
-                            obj_file_path = os.path.join(obj_dir,json_key, matched_obj_file)
+                    # 读取 OBJ 文件内容
+                    obj_file_path = os.path.join(obj_dir, matched_obj_file)
 
-                            # 将处理后的数据写入到对应的输出文件夹
-                            output_scene_subfolder = os.path.join(output_dir, json_key)  # 按数字保存
-                            os.makedirs(output_scene_subfolder, exist_ok=True)
-                            output_file_path = os.path.join(output_scene_subfolder, f"{json_key}")
-                            
-                            mesh_path=obj_file_path
-                            json_path=json_file_path
-                            output_path=output_file_path
-                            center_of_mass,total_area=get_center_of_mass_from_mesh()
+                    # 将处理后的数据写入到对应的输出文件夹
+                    output_scene_subfolder = os.path.join(output_dir, json_key)  # 按数字保存
+                    os.makedirs(output_scene_subfolder, exist_ok=True)
+                    output_file_path = os.path.join(output_scene_subfolder, f"{json_key}")
+                    
+                    mesh_path=obj_file_path
+                    json_path=json_file_path
+                    output_path=output_file_path
+                    center_of_mass,total_area=get_center_of_mass_from_mesh()
 
-                            print(f"Processed: {json_file_path},{obj_file_path} -> {output_file_path}")
-                            run()
+                    print(f"Processed: {json_file_path},{obj_file_path} -> {output_file_path}")
+                    run()
     current_time = time.time() - start_time
-    print(f"current_time:{current_time}")
+    print(f"current_time:{current_time}")  
     p.disconnect()
-

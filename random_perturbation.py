@@ -16,8 +16,7 @@ import os
 
 
 def run():
-    log = pd.DataFrame(columns=['抓取结果', '掉落质量(kg)','空间角变化(弧度)','机械臂移动距离','末端执行器位置','机械臂位置','物体位置', '物体质心位置','接触点位置','法线','距离','正向接触力','侧向摩擦力','相对于物体质心的距离','在物体坐标系中的坐标'])
-    log_1=pd.DataFrame(columns=['抓取场景和物体','力(N)', '质量(kg)','空间角变化(弧度)','物体质心移动距离', '物体质心位置','接触点位置','正向接触力','侧向摩擦力','相对于物体质心的距离','在物体坐标系中的坐标'])
+    log = pd.DataFrame(columns=['抓取结果', '掉落质量(kg)','空间角变化(弧度)','物体质心移动距离','末端执行器位置','机械臂位置','物体位置', '物体质心位置','接触点位置','法线','距离','正向接触力','侧向摩擦力','相对于物体质心的距离','在物体坐标系中的坐标'])
     object,constraint=create_object()
     #计算从物体坐标系到世界坐标系的变化矩阵，4*4的，包括旋转和平移
     object_T_global=get_object_matrix(object,center_of_mass)
@@ -25,10 +24,11 @@ def run():
     p.removeBody(object)
     flags=1
     #依次读取json文件内容进行仿真
-    for i in range(1):
+    for i in range(100):
+        log_1=pd.DataFrame(columns=['抓取场景和物体','力(N)', '扰动力','质量(kg)','空间角变化(弧度)','物体质心移动距离', '物体质心位置','接触点位置','正向接触力','侧向摩擦力','相对于物体质心的距离','在物体坐标系中的坐标'])
         #读取json文件，获得从夹爪坐标系到物体坐标系的变换矩阵，4x4,包括旋转和平移,flag_1代表着文件内是否还有有效数据
-        grasp_center,grasp_endpoints,gravity,flag_1,obj_id,scene_id=read_json(obj_key,i)
-        gravity_setting(gravity)
+        grasp_center,grasp_endpoints,gravity,flag_1,obj_id,scene_id=read_json(i)
+        gravity_setting(np.array(gravity))
         # 初始化一行数据为 None
         log.loc[len(log)] = [None] * len(log.columns)
         #初始化设置log
@@ -41,9 +41,9 @@ def run():
                 panda=create_gripper(gripper_basePosition)
                 #执行仿真,falgs=-1说明机械臂位置不对，flags=False说明该姿势抓不住，flags=True说明可以抓住物体
                 flags,panda,object,log,object_pos_1,matrix_1=step(panda,object_T_global,grasp_center,grasp_endpoints,log,i,center_of_mass)
-                #逐渐增加物体质量，返回最后掉落时的质量
-                mass=increase_mass(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id,obj_key,center_of_mass)
-                print(mass)
+                #逐渐减小机械臂的力，记录最小的夹取力
+                min_froce=random_perturbation(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id,i,center_of_mass)
+                print(min_froce)
                 #移除所有物体、机械臂、辅助线
                 if object==-1:
                     p.removeBody(panda)
@@ -53,16 +53,17 @@ def run():
                     p.removeBody(object)
                     p.removeAllUserDebugItems()
                 #记录抓取成功时的信息
-                if flags==True or (flags == False and mass == -1):
-                    #print(gripper_basePosition)
+                if flags==True or flags == False :
+                    print(gripper_basePosition)
                     if flags==True:
                         log.iloc[-1, 0] = '抓取成功'
                     log.iloc[-1, 1] = mass
                     log.at[log.index[-1], "机械臂位置"] = gripper_basePosition
                     log.at[log.index[-1],'物体位置'] = object_position
-                    log.to_csv(f'{output_path}_{obj_key}.csv', index=True,na_rep='NA')
+                    log.to_csv(f'{output_path}.csv', index=True,na_rep='NA')
+
                     break
-                log.to_csv(f'{output_path}_{obj_key}.csv', index=True,na_rep='NA')
+                log.to_csv(f'{output_path}.csv', index=True,na_rep='NA')
             #这里的flags已经从寻找位置的for循环跳出，如果falgs=-1,说明没找到合适位置
             if flags==-1:
                 log.iloc[-1, 0] = '未找到抓取位置'
@@ -165,14 +166,14 @@ def carmer_photo(i,grasp_center,left_finger_target,right_finger_target,target_po
     draw_2 = ImageDraw.Draw(image_pil_2)
 
     # 添加文字到左上角
-    text_1 = f'{output_path}_{obj_key}_1.png'
-    text_2 = f'{output_path}_{obj_key}_2.png' 
+    text_1 = f'{output_path}_{i}_1.png'
+    text_2 = f'{output_path}_{i}_2.png' 
     text_position = (10, 10)  # 文字位置，左上角 (x, y)
     draw_1.text(text_position, text_1, fill="black")  # 在第一张图片上添加文字
     draw_2.text(text_position, text_2, fill="black")  # 在第二张图片上添加文字
 
-    image_pil_1.save(f'{output_path}_{obj_key}_1.png')
-    image_pil_2.save(f'{output_path}_{obj_key}_2.png')
+    image_pil_1.save(f'{output_path}_{i}_1.png')
+    image_pil_2.save(f'{output_path}_{i}_2.png')
 
 #将夹爪坐标系里的点映射到世界坐标系里
 def gripperpoint_T_global(gripper_point,gripper_T_object,object_T_global):
@@ -299,9 +300,9 @@ def calculate_gripper_ori(A,B,C):
 #执行关闭夹爪的动作
 def close_finger(panda):
 
-    p.setJointMotorControl2(panda, left_finger_id, p.POSITION_CONTROL, targetPosition=0,force=target_force,targetVelocity=target_velocity)
+    p.setJointMotorControl2(panda, left_finger_id, p.POSITION_CONTROL, targetPosition=0,force=target_force,targetVelocity=0.2)
 
-    p.setJointMotorControl2(panda, right_finger_id, p.POSITION_CONTROL, targetPosition=0,force=target_force,targetVelocity=target_velocity)
+    p.setJointMotorControl2(panda, right_finger_id, p.POSITION_CONTROL, targetPosition=0,force=target_force,targetVelocity=0.2)
     for i in range(720):
         p.stepSimulation()
         #time.sleep(time_step)
@@ -320,6 +321,7 @@ def step(panda,object_T_global,grasp_center,grasp_endpoints,log,opnum,center_of_
     right_finger_target=objectpoint_T_global(grasp_endpoints[1],object_T_global)
     #通过将夹爪坐标系里的两个点映射到世界坐标系来确定抓取方向
     gripper_ori=calculate_gripper_ori(grasp_center,left_finger_target,right_finger_target)
+    #gripper_ori=-gripper_ori
     print(gripper_ori)
     rotation_quaternion=gripper_ori_T_rotation_quaternion(gripper_ori)
     #将物体坐标系中的抓取点映射到世界坐标系中作为目标抓取点
@@ -357,7 +359,8 @@ def step(panda,object_T_global,grasp_center,grasp_endpoints,log,opnum,center_of_
     p.setJointMotorControl2(panda, left_finger_id, p.POSITION_CONTROL, targetPosition=finger_max_position,
                             force=target_force, maxVelocity=target_velocity)
     p.setJointMotorControl2(panda, right_finger_id, p.POSITION_CONTROL, targetPosition=finger_max_position,
-                            force=target_force, maxVelocity=target_velocity)
+                            force=10, maxVelocity=target_velocity)
+
     #执行仿真，让机械臂到达指定位置
     for j in range(240):  
         p.stepSimulation()
@@ -430,6 +433,7 @@ def step(panda,object_T_global,grasp_center,grasp_endpoints,log,opnum,center_of_
     sphere_2=create_sphere(object_pos,0.005,[1,1,0])
     #关闭夹爪
     close_finger(panda)
+    #time.sleep(100)
     p.removeBody(sphere_1)
     p.removeBody(sphere_2)
     p.removeBody(sphere_3)
@@ -442,7 +446,7 @@ def step(panda,object_T_global,grasp_center,grasp_endpoints,log,opnum,center_of_
     end_effector_orn_1 = p.getLinkState(panda, end_effector_id)[1]
     matrix_1=quaternion_to_rotation_matrix_panda(end_effector_orn_1)
     #记录初始时的机械臂和物体接触信息
-    contact_point_1,log=record(panda,object,log,center_of_mass) 
+    contact_point_1,log=record(panda,object,log,center_of_mass,flag=False) 
     #撤去对物体的位置限制
     p.removeConstraint(constraint)
     #进行仿真，五秒，认为物体可以保持稳定
@@ -452,21 +456,20 @@ def step(panda,object_T_global,grasp_center,grasp_endpoints,log,opnum,center_of_
     #记录稳定后末端执行器的位置和方向，将方向转化为3x3数组
     end_effector_pos_2 = p.getLinkState(panda, end_effector_id)[0]
     object_pos_2,object_ori=p.getBasePositionAndOrientation(object)
-    end_effector_move_distance = np.linalg.norm(
-        np.array(end_effector_pos_1)-np.array(object_pos_1) - np.array(end_effector_pos_2)+np.array(object_pos_2)) 
+    obj_center_move_distance = np.linalg.norm(np.array(object_pos_1)-np.array(object_pos_2)) 
     end_effector_orn_2 = p.getLinkState(panda, end_effector_id)[1]
     matrix_2 = quaternion_to_rotation_matrix_panda(end_effector_orn_2)
     #计算稳定前后末端执行器移动的空间角（弧度值）
     angle=rotation_matrix_angle(matrix_1,matrix_2)
     #记录稳定时的机械臂和物体接触信息,返回当前接触点
-    contact_point_2,log=record(panda,object,log,center_of_mass)
+    contact_point_2,log=record(panda,object,log,center_of_mass,flag=True)
     #如果两个接触点均非0，说明最后抓取成功，返回一个标志值flags用来判断是否继续执行质量增加的仿真
     #if isinstance(contact_point_1, list) and isinstance(contact_point_2, list):
     if len(contact_point_1)>0 and len(contact_point_2)>0:
             flags=True
             if flags==True:
                 log.iloc[-1, 2] = angle
-                log.iloc[-1, 3] = end_effector_move_distance
+                log.iloc[-1, 3] = obj_center_move_distance
                 log.at[log.index[-1], '末端执行器位置'].append(tuple(np.array(end_effector_pos_1)-np.array(object_pos_1)))
                 log.at[log.index[-1], '末端执行器位置'].append(tuple(np.array(end_effector_pos_2)-np.array(object_pos_2)))  
             return flags,panda,object,log,object_pos_1,matrix_1
@@ -484,7 +487,7 @@ def get_center_of_mass_from_mesh():
     center_of_mass,total_area=compute_mesh_center_of_mass_and_area(vertices,faces)
     return center_of_mass,total_area
 
-#计算mesh的质心位置,在物体坐标系中的位置
+#计算mesh的质心位置
 def compute_mesh_center_of_mass_and_area(vertices: torch.Tensor, faces: torch.Tensor):
     """
     计算网格的质心，使用面片面积加权计算每个三角形的质心。
@@ -525,7 +528,7 @@ def compute_mesh_center_of_mass_and_area(vertices: torch.Tensor, faces: torch.Te
     return center_of_mass, total_area
 
 #在稳定后逐渐增加物体的质量
-def increase_mass(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id,pose_num,center_of_mass):
+def increase_mass(flags,panda,object):
     if flags==True:
         new_mass=1
         for i in range(10000):
@@ -539,11 +542,38 @@ def increase_mass(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id
             contact_points = p.getContactPoints(panda, object)  # 获取机械臂与积木的接触点
             if len(contact_points)==0:
                 return new_mass
+
+    else :
+        return -1
+
+#添加随机扰动
+def random_perturbation(flags,panda,obj,object_pos_1,matrix_1,log_1,obj_id,scene_id,pose_num,center_of_mass):
+    force_ori=np.array([[1,1,1],
+    [1,-1,-1],
+    [-1,1,-1],
+    [-1,-1,1]])
+    random_force=0
+    if flags==True:
+        for i in range(10000):
+            random_force+=1
+            for j in range(4):
+                for n in range(240):
+                    p.stepSimulation()
+                obj_pos,obj_ori=p.getBasePositionAndOrientation(obj)
+                # 应用随机力，力作用位置和力大小
+                force=random_force*force_ori[j]
+                p.applyExternalForce(objectUniqueId=obj, linkIndex=-1, forceObj=force, posObj=obj_pos, flags=p.WORLD_FRAME)
+                p.stepSimulation() 
+            contact_points = p.getContactPoints(panda, obj)  # 获取机械臂与积木的接触点
+            if len(contact_points)==0:
+                return random_force
             left_joint_states = p.getJointState(panda, left_finger_id)
             left_actual_force = left_joint_states[3]  # 第四个值是实际施加的力/力矩
             right_joint_states = p.getJointState(panda, right_finger_id)
             right_actual_force = right_joint_states[3]  # 第四个值是实际施加的力/力矩
-            object_pos_2,object_ori=p.getBasePositionAndOrientation(object)
+            print(f"Actual force: {left_actual_force},{right_actual_force}")
+            print(random_force)
+            object_pos_2,object_ori=p.getBasePositionAndOrientation(obj)
             obj_center_move_distance = np.linalg.norm(np.array(object_pos_1)-np.array(object_pos_2)) 
             end_effector_orn_2 = p.getLinkState(panda, end_effector_id)[1]
             matrix_2 = quaternion_to_rotation_matrix_panda(end_effector_orn_2)
@@ -555,28 +585,20 @@ def increase_mass(flags,panda,object,object_pos_1,matrix_1,log_1,obj_id,scene_id
             log_1=initialization_log_1(log_1)
             log_1.iloc[-1, 0] = f"{scene_id}_{obj_id}_{pose_num}"
             log_1.iloc[-1, 1] = f"left:{left_actual_force},right:{right_actual_force}"
-            log_1.iloc[-1, 2] = new_mass
-            log_1.iloc[-1, 3] = angle
-            log_1.iloc[-1, 4] = obj_center_move_distance
-            log_1=record_increase_mass(panda,object,log_1,center_of_mass)
-            log_1.to_csv(f'{output_path}_{pose_num}_increase_mass.csv', index=True,na_rep='NA')
+            log_1.iloc[-1, 2] = random_force
+            log_1.iloc[-1, 3] = mass
+            log_1.iloc[-1, 4] = angle
+            log_1.iloc[-1, 5] = obj_center_move_distance
+            log_1=increase_random_force(panda,obj,log_1,center_of_mass)
+            log_1.to_csv(f'{output_path}_{pose_num}_random_perturbation.csv', index=True,na_rep='NA')
+        return random_force
 
     else :
         return -1
-    
-#初始化log_1.csv文件
-def initialization_log_1(log_1):
-    log_1.at[log_1.index[-1], '接触点位置'] = []
-    log_1.at[log_1.index[-1], '正向接触力'] = []
-    log_1.at[log_1.index[-1], '侧向摩擦力'] = []
-    log_1.at[log_1.index[-1], '相对于物体质心的距离'] = []
-    log_1.at[log_1.index[-1], '在物体坐标系中的坐标'] = []
-    return log_1
 
-#记录抓取力降低过程中的信息
-def record_increase_mass(panda_id, object,log_1,center_of_mass):
-    # 获取接触点信息
-    contact_points = get_grasp_contact_points(panda_id, object)
+def increase_random_force(panda,object,log_1,center_of_mass):
+        # 获取接触点信息
+    contact_points = get_grasp_contact_points(panda, object)
 
     if len(contact_points) > 0:
         # 获取物体质心的初始位置和方向
@@ -601,7 +623,7 @@ def record_increase_mass(panda_id, object,log_1,center_of_mass):
         return log_1
 
     else :
-        return log_1 
+        return log_1  
 
 # 获得接触点的信息
 def get_grasp_contact_points(panda_id, object_id):
@@ -684,7 +706,7 @@ def quaternion_to_rotation_matrix_panda(quat):
     matrix = np.array(rotation).reshape(3, 3)
     return  matrix
 
-#初始化.csv文件
+#初始化log.csv文件
 def initialization_log(log):
     log.at[log.index[-1], '末端执行器位置'] = []
     log.at[log.index[-1], '机械臂位置'] = []
@@ -699,8 +721,17 @@ def initialization_log(log):
     log.at[log.index[-1], '在物体坐标系中的坐标'] = []
     return log
 
+#初始化log_1.csv文件
+def initialization_log_1(log_1):
+    log_1.at[log_1.index[-1], '接触点位置'] = []
+    log_1.at[log_1.index[-1], '正向接触力'] = []
+    log_1.at[log_1.index[-1], '侧向摩擦力'] = []
+    log_1.at[log_1.index[-1], '相对于物体质心的距离'] = []
+    log_1.at[log_1.index[-1], '在物体坐标系中的坐标'] = []
+    return log_1
+
 #记录接触点信息
-def record(panda_id, object,log,center_of_mass):
+def record(panda_id, object,log,center_of_mass,flag):
     # 获取接触点信息
     contact_points = get_grasp_contact_points(panda_id, object)
 
@@ -712,14 +743,14 @@ def record(panda_id, object,log,center_of_mass):
         object_T_global=get_object_matrix(object,center_of_mass)
 
         # 将接触点信息存储到文件，进行进一步处理
-
         log.at[log.index[-1],'物体质心位置'] = object_pos
         for contact in contact_points:
                 log.at[log.index[-1], '接触点位置'].append(contact['position_gripper'])
                 log.at[log.index[-1], '法线'].append(contact['normal'])
                 log.at[log.index[-1], '距离'].append(contact['distance'])
-                log.at[log.index[-1], '正向接触力'].append(contact['normalforce'])
-                log.at[log.index[-1], '侧向摩擦力'].append(contact['lateralforce1'])
+                if flag==True :
+                    log.at[log.index[-1], '正向接触力'].append(contact['normalforce'])
+                    log.at[log.index[-1], '侧向摩擦力'].append(contact['lateralforce1'])
                 #计算接触点相对于质心的距离
                 dictance_contact,gravity_ori_contact=calculate_distance_and_gravity_ori_world(contact['position_gripper'],object_pos)
                 log.at[log.index[-1], '相对于物体质心的距离'].append(dictance_contact)
@@ -734,36 +765,40 @@ def record(panda_id, object,log,center_of_mass):
         empty_list=[] 
         return empty_list,log  
 
+
 #读取json文件中的信息，返回抓取姿势(从夹爪mesh到物体mesh的变换矩阵，4x4)，抓取中心点(物体坐标系中)，两个抓取端点(物体坐标系中)
-def read_json(obj_key,i):
-    obj_key=int(obj_key)
+def read_json(i):
     # 读取 JSON 文件并提取 gripper_pose 字段
     with open(json_path, 'r') as f:
         gripper_data = json.load(f)
     
     # 确保 i 不超过 gripper_data 的长度
     if i < len(gripper_data):
-        if obj_key < len(gripper_data):
-            # 遍历每个 gripper pose
-            data = gripper_data[obj_key]
-            #gripper_pose = data["gripper_pose"]
-            grasp_center = data["center_"]
-            grasp_endpoints = data["endpoints"]
-            gravity = data["gravity"]
-            obj_id = data["obj_id"]
-            cam_id = data["cam_id"]
-            scene_id = data["scene_id"]
-            
-            if grasp_center and grasp_endpoints:
-                flag = True  # 数据有效
-            else:
-                flag = False  # 数据无效
-        else :
-            flag = False
-            return 0,0,(0,0,-1),flag
+        # 遍历每个 gripper pose
+        data = gripper_data[i]
+        #gripper_pose = data["gripper_pose"]
+        grasp_center = data["center_"]
+        grasp_endpoints = data["endpoints"]
+        gravity = data["gravity"]
+        obj_id = data["obj_id"]
+        cam_id = data["cam_id"]
+        scene_id = data["scene_id"]
+        
+        if grasp_center and grasp_endpoints:
+            flag = True  # 数据有效
+        else:
+            flag = False  # 数据无效
     else :
         flag = False
-        return 0,0,(0,0,-1),flag,-1,-1
+        return 0,0,(0,0,-1),flag,0,0
+
+    # # 提取旋转矩阵和位移向量
+    # rotation_matrix = np.array(gripper_pose[:3])  # 旋转矩阵 3x3
+    # translation_vector = np.array(gripper_pose[3:])  # 位移向量 3
+    # # 创建 4x4 变换矩阵
+    # transformation_matrix = np.eye(4)  # 创建 4x4 的单位矩阵
+    # transformation_matrix[:3, :3] = rotation_matrix  # 设置旋转矩阵
+    # transformation_matrix[:3, 3] = translation_vector  # 设置平移向量
 
     return grasp_center,grasp_endpoints,gravity,flag,obj_id,scene_id
 
@@ -847,9 +882,9 @@ def gravity_setting(gravity):
 if __name__=="__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-m", "--modle",help="被抓物体obj文件路径", default="obj/scene_0102/9_simple.obj")
-    parser.add_argument("-g", "--grasp_json",help="grasp.json文件路径", default="json/scene_0102/0000_0009.json")
-    parser.add_argument("-op", "--output_path",help="输出结果文件路径", default="output/scene_0102/09")
+    parser.add_argument("-m", "--modle",help="被抓物体obj文件路径", default="filter_obj_json/json/0000_0000.json")
+    parser.add_argument("-g", "--grasp_json",help="grasp.json文件路径", default="merged_json/0000_0051.json")
+    parser.add_argument("-op", "--output_path",help="输出结果文件路径", default="filter_obj_json/output")
     parser.add_argument("-p", "--position", help="机械臂设定的位置", default=[0,0,0])
     parser.add_argument("--center_of_mass", help="物体设定的质心位置,相对物体坐标系而言", default=[0,0,0])
     parser.add_argument("--object_position", help="物体在世界坐标系下的位置", default=[0.5,0.5,0.5])
@@ -869,7 +904,6 @@ if __name__=="__main__":
     # 物体设置
     mesh_path = args.modle
 
-    center_of_mass=args.center_of_mass
     object_position = args.object_position
     output_path=args.output_path
     #物体缩放比例
@@ -912,56 +946,50 @@ if __name__=="__main__":
     gripper_pos_list = generate_circle_points(center, 0.05, num_points)
 
     start_time=time.time()
-    base_dir = "filter_obj_json2025.1.14"
+    base_dir = "filter_obj_json2025.1.13"
     json_base = "json"
-    obj_base = "change_obj/PAG"
-    output_base = "output/increase_mass"
+    obj_base = "obj"
+    output_base = "output/random_perturbation"
     json_dir = os.path.join(base_dir, json_base)
     obj_dir = os.path.join(base_dir, obj_base)
-    output_dir = os.path.join(base_dir, output_base ,obj_base)
+    output_dir = os.path.join(base_dir, output_base ,f"{obj_base}")
     os.makedirs(output_dir,exist_ok=True)
+
     # 遍历 JSON 文件夹的子文件夹
     for scene_folder in sorted(os.listdir(json_dir)):
             if scene_folder.endswith(".json"):
-                #if scene_folder=="0000_0021.json":
-                    # JSON 文件路径
-                    json_file_path = os.path.join(json_dir, scene_folder)
-                    # 提取 JSON 文件名中的关键字（不含扩展名）
-                    json_key = scene_folder.split('_')[-1].split('.')[0]
+                # JSON 文件路径
+                json_file_path = os.path.join(json_dir, scene_folder)
+                # 提取 JSON 文件名中的关键字（不含扩展名）
+                json_key = scene_folder.split('_')[-1].split('.')[0] 
 
-                    obj_file_path=os.path.join(obj_dir,json_key)
-                    if not os.path.exists(obj_file_path):
-                        print(f"警告：未找到对应的 OBJ 文件夹 {obj_file_path}")
-                        continue 
+                # 找到对应的 OBJ 文件
+                matched_obj_file = None
+                for obj_file in os.listdir(obj_dir):
+                    if obj_file.endswith(".obj") and obj_file.startswith(f"{int(json_key)}_"):
+                        matched_obj_file = obj_file
+                        break
 
-                    # 找到对应的 OBJ 文件
-                    matched_obj_file = None
-                    for obj_file in os.listdir(obj_file_path):
-                        if obj_file.endswith(".obj") and obj_file.startswith(f"{int(json_key)}_"):
-                            matched_obj_file = obj_file
-                            obj_key = obj_file.split('_')[-1].split('.')[0]
+                # 如果找不到对应的 OBJ 文件，跳过
+                if not matched_obj_file:
+                    print(f"Warning: No matching OBJ file for {scene_folder}")
+                    continue
 
-                            # 如果找不到对应的 OBJ 文件，跳过
-                            if not matched_obj_file:
-                                print(f"Warning: No matching OBJ file for {scene_folder}")
-                                continue
+                # 读取 OBJ 文件内容
+                obj_file_path = os.path.join(obj_dir, matched_obj_file)
 
-                            # 读取 OBJ 文件内容
-                            obj_file_path = os.path.join(obj_dir,json_key, matched_obj_file)
+                # 将处理后的数据写入到对应的输出文件夹
+                output_scene_subfolder = os.path.join(output_dir, json_key)  # 按数字保存
+                os.makedirs(output_scene_subfolder, exist_ok=True)
+                output_file_path = os.path.join(output_scene_subfolder, f"{json_key}")
+                
+                mesh_path=obj_file_path
+                json_path=json_file_path
+                output_path=output_file_path
+                center_of_mass,total_area=get_center_of_mass_from_mesh()
 
-                            # 将处理后的数据写入到对应的输出文件夹
-                            output_scene_subfolder = os.path.join(output_dir, json_key)  # 按数字保存
-                            os.makedirs(output_scene_subfolder, exist_ok=True)
-                            output_file_path = os.path.join(output_scene_subfolder, f"{json_key}")
-                            
-                            mesh_path=obj_file_path
-                            json_path=json_file_path
-                            output_path=output_file_path
-                            center_of_mass,total_area=get_center_of_mass_from_mesh()
-
-                            print(f"Processed: {json_file_path},{obj_file_path} -> {output_file_path}")
-                            run()
+                print(f"Processed: {json_file_path},{obj_file_path} -> {output_file_path}")
+                run()
     current_time = time.time() - start_time
-    print(f"current_time:{current_time}")
+    print(f"current_time:{current_time}")  
     p.disconnect()
-

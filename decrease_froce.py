@@ -16,7 +16,7 @@ import os
 
 
 def run():
-    log = pd.DataFrame(columns=['抓取结果', '掉落质量(kg)','空间角变化(弧度)','物体质心移动距离','末端执行器位置','机械臂位置','物体位置', '物体质心位置','接触点位置','法线','距离','正向接触力','侧向摩擦力','相对于物体质心的距离','在物体坐标系中的坐标'])
+    log = pd.DataFrame(columns=['抓取结果', '质量(kg)','空间角变化(弧度)','物体质心移动距离','末端执行器位置','机械臂位置','物体位置', '物体质心位置','接触点位置','法线','距离','正向接触力','侧向摩擦力','相对于物体质心的距离','在物体坐标系中的坐标'])
     object,constraint=create_object()
     #计算从物体坐标系到世界坐标系的变化矩阵，4*4的，包括旋转和平移
     object_T_global=get_object_matrix(object,center_of_mass)
@@ -62,12 +62,8 @@ def run():
                     log.at[log.index[-1], "机械臂位置"] = gripper_basePosition
                     log.at[log.index[-1],'物体位置'] = object_position
                     log.to_csv(f'{output_path}.csv', index=True,na_rep='NA')
-                    current_time = time.time() - start_time
-                    print(f"current_time:{current_time}")
                     break
                 log.to_csv(f'{output_path}.csv', index=True,na_rep='NA')
-                current_time = time.time() - start_time
-                print(f"current_time:{current_time}")
             #这里的flags已经从寻找位置的for循环跳出，如果falgs=-1,说明没找到合适位置
             if flags==-1:
                 log.iloc[-1, 0] = '未找到抓取位置'
@@ -947,7 +943,7 @@ if __name__=="__main__":
     gripper_pos_list = generate_circle_points(center, 0.05, num_points)
 
     start_time=time.time()
-    base_dir = "filter_obj_json2025.1.13"
+    base_dir = "filter_obj_json2025.1.14"
     json_base = "json"
     obj_base = "obj"
     output_base = "output/decrease_froce"

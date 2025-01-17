@@ -772,8 +772,6 @@ def read_json(obj_key,i):
     with open(json_path, 'r') as f:
         gripper_data = json.load(f)
     if i < len(gripper_data):
-
-        # 确保 i 不超过 gripper_data 的长度
         if obj_key < len(gripper_data):
             # 遍历每个 gripper pose
             data = gripper_data[obj_key]
@@ -940,7 +938,7 @@ if __name__=="__main__":
     num_points = args.num_points
     gripper_pos_list = generate_circle_points(center, 0.05, num_points)
 
-    base_dir = "filter_obj_json2025.1.13"
+    base_dir = "filter_obj_json2025.1.14"
     json_base = "json"
     obj_base = "change_obj/FR"
     output_base = "output/decrease_froce"
