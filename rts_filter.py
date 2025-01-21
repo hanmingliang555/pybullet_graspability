@@ -3,8 +3,8 @@ import re
 import shutil
 
 # 根目录路径
-root_dir = "rst_0113_5_B/rst_0113_5/PAG-30-0.01"
-output_dir = "filter_obj_json_B/change_obj/PAG"  # 输出文件夹路径
+root_dir = "rst_0116_0/PAG-20-0.005"
+output_dir = "3gripper_data/change_obj/PAG"  # 输出文件夹路径
 os.makedirs(output_dir, exist_ok=True)  # 创建输出目录
 
 # 遍历根目录中的所有子文件夹
